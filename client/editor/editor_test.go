@@ -72,6 +72,8 @@ func TestEditor_MoveCursor(t *testing.T) {
 		{"move down (short to long)", 6, 0, 1, 10, []rune("test\ning\ncase")},
 		{"move up (long to short)", 6, 0, -1, 2, []rune("tes\nting\nyes")},
 		{"move down (long to short)", 6, 0, 1, 11, []rune("tes\nting\nyes")},
+		{"move up (from empty line)", 3, 0, -1, 0, []rune("tes\n\nting\n")},
+		{"move down (from empty line)", 3, 0, 1, 4, []rune("tes\n\nting\n")},
 	}
 
 	e := NewEditor(Config{})
