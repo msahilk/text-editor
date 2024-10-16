@@ -2,7 +2,6 @@ package editor
 
 import (
 	"fmt"
-	_ "fmt"
 	"github.com/mattn/go-runewidth"
 	"github.com/nsf/termbox-go"
 	"sync"

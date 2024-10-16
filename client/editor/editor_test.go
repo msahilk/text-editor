@@ -74,6 +74,16 @@ func TestEditor_MoveCursor(t *testing.T) {
 		{"move down (long to short)", 6, 0, 1, 11, []rune("tes\nting\nyes")},
 		{"move up (from empty line)", 3, 0, -1, 0, []rune("tes\n\nting\n")},
 		{"move down (from empty line)", 3, 0, 1, 4, []rune("tes\n\nting\n")},
+		{"move up (from empty to empty)", 6, 0, -1, 5, []rune("test\n\n\n")},
+		{"move down (from empty to empty)", 6, 0, 1, 7, []rune("test\n\n\n")},
+		{"move up (from empty last line to empty)", 7, 0, -1, 6, []rune("test\n\n\n")},
+		{"move down (from empty first line to empty)", 0, 0, 1, 1, []rune("\n\n\n")},
+		{"move up (from empty last)", 7, 0, -1, 2, []rune("\n\ntest\n")},
+		{"move down (from empty first)", 0, 0, 1, 1, []rune("\ntest\n")},
+		{"move up (from empty first)", 0, 0, -1, 0, []rune("\ntest\n")},
+		{"move down (from empty last)", 6, 0, 1, 6, []rune("\ntest\n")},
+		{"move up (from last to empty)", 2, 0, -1, 1, []rune("\n\ntest")},
+		{"move up (from first to empty)", 2, 0, 1, 5, []rune("test\n\n")},
 	}
 
 	e := NewEditor(Config{})
@@ -92,3 +102,5 @@ func TestEditor_MoveCursor(t *testing.T) {
 	}
 
 }
+
+// TODO : Test scrolling
