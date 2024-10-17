@@ -93,7 +93,7 @@ func (e *Editor) GetHeight() int {
 	return e.Height
 }
 
-func (e *Editor) setSize(w, h int) {
+func (e *Editor) SetSize(w, h int) {
 
 	e.Width = w
 	e.Height = h

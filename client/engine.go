@@ -21,7 +21,7 @@ func handleTermboxEvent(ev termbox.Event, conn *websocket.Conn) error {
 
 		// Exit on Escape or Ctrl+C
 		case termbox.KeyEsc, termbox.KeyCtrlC:
-			return errors.New("exiting") // Error returned as an exit event
+			return errors.New("editor exiting") // Error returned as an exit event
 
 		// Save document on Ctrl+S
 		case termbox.KeyCtrlS:
@@ -134,7 +134,6 @@ func performOperation(operation int, ev termbox.Event, conn *websocket.Conn) {
 	// Perform insert operation
 	switch operation {
 	case OperationInsert:
-		logger.Infof("LOCAL INSERT: %s at cursor position %v\n", ch, e.Cursor)
 		// Insert character at the current cursor position in the local CRDT document
 		text, err := doc.Insert(e.Cursor+1, ch)
 		if err != nil {
@@ -149,7 +148,7 @@ func performOperation(operation int, ev termbox.Event, conn *websocket.Conn) {
 
 	// Perform delete operation
 	case OperationDelete:
-		logger.Infof("LOCAL DELETE: %s at cursor position %v\n", ch, e.Cursor)
+		//logger.Infof("LOCAL DELETE: %s at cursor position %v\n", ch, e.Cursor)
 
 		// Ensure cursor doesn't go out of bounds
 		if e.Cursor-1 < 0 {
@@ -196,13 +195,13 @@ func handleMsg(msg commons.Message, conn *websocket.Conn) {
 
 	// Sync local document with remote document received
 	case commons.DocSyncMessage:
-		logger.Infof("DOCSYNC RECEIVED, UPDATING LOCAL DOC %+v\n", msg.Document)
+		//logger.Infof("DOCSYNC RECEIVED, UPDATING LOCAL DOC %+v\n", msg.Document)
 		doc = msg.Document
 		e.SetText(crdt.Content(doc))
 
 	// Respond to document request by sending local document
 	case commons.DocReqMessage:
-		logger.Infof("DOCREQ RECEIVED, SENDING LOCAL DOC TO %v\n", msg.ID)
+		//logger.Infof("DOCREQ RECEIVED, SENDING LOCAL DOC TO %v\n", msg.ID)
 		docMsg := commons.Message{Type: commons.DocSyncMessage, Document: doc, ID: msg.ID}
 		_ = conn.WriteJSON(&docMsg)
 
@@ -239,7 +238,7 @@ func handleMsg(msg commons.Message, conn *websocket.Conn) {
 			if msg.Operation.Position-1 <= e.Cursor {
 				e.MoveCursor(len(msg.Operation.Value), 0)
 			}
-			logger.Infof("REMOTE INSERT: %s at position %v\n", msg.Operation.Value, msg.Operation.Position)
+			//logger.Infof("REMOTE INSERT: %s at position %v\n", msg.Operation.Value, msg.Operation.Position)
 
 		// Delete character from the local document and update UI
 		case "delete":
@@ -248,13 +247,13 @@ func handleMsg(msg commons.Message, conn *websocket.Conn) {
 			if msg.Operation.Position-1 <= e.Cursor {
 				e.MoveCursor(-len(msg.Operation.Value), 0)
 			}
-			logger.Infof("REMOTE DELETE: position %v\n", msg.Operation.Position)
+			//logger.Infof("REMOTE DELETE: position %v\n", msg.Operation.Position)
 
 		}
 	}
 
 	// Debugging output for the document
-	printDoc(doc)
+	//printDoc(doc)
 
 	// Send redraw signal to update the UI
 	e.SendDraw()
