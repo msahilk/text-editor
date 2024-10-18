@@ -5,7 +5,7 @@
 
 <h3>Overview</h3>
 
-This project is a real-time collaborative text editor that allows multiple users to edit a document simultaneously. It uses WOOT CRDT (WithOut Operational Transformation) for conflict-free editing, ensuring consistent document state across distributed users.
+This project is a real-time collaborative text editor that allows multiple users to edit a document simultaneously. It uses WOOT CRDT (WithOut Operational Transformation) for conflict-free editing, ensuring a consistent document state across distributed users.
 
 Features<ul>
 <li>Real-time collaboration: Multiple users can edit the same document.</li>
@@ -43,5 +43,6 @@ Connect to the server with one or more clients! You can use the following flags 
 ./client.exe -server localhost:8080 -login true -file "my_file.txt"
 ```
 
-How It Works
+How It Works <br>
 The editor uses WOOT CRDT to ensure that every user's changes are applied consistently, even if they edit the same parts of the document simultaneously. Each character in the document is uniquely identified and can be inserted or deleted without conflicts.
+It uses Go's concurrency and thread safety to avoid conflicts in the client-server architecture.
