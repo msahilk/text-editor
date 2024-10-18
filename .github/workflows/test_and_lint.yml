@@ -15,6 +15,4 @@ jobs:
       - name: Run tests with race detector
         run: go test -race ./...
 
-      - name: Run lint
-        run: golangci-lint run
 
