@@ -14,6 +14,7 @@ Features<ul>
 <li>File loading and saving: Easily load and save files within the editor.</li>
 </ul>
 Installation
+<br>
 Clone the repository:
 ```
 git clone https://github.com/msahilk/text-editor.git
