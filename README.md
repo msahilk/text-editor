@@ -36,5 +36,9 @@ Connect to the server with one or more clients! You can use the following flags 
 <li>-server: server address (default port 8080)</li>
 </ul>
 
+```
+./client.exe -server localhost:8080 -login true -file "my_file.txt"
+```
+
 How It Works
 The editor uses WOOT CRDT to ensure that every user's changes are applied consistently, even if they edit the same parts of the document simultaneously. Each character in the document is uniquely identified and can be inserted or deleted without conflicts.
