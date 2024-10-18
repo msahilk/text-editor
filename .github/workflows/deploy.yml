@@ -25,7 +25,7 @@ jobs:
 
     - name: Deploy to EC2
       run: |
-        ssh -tt -i ~/.ssh/id_rsa ec2-user@${{ secrets.EC2_PUBLIC_IP }} << 'EOF'
+        ssh -vvv -tt -i ~/.ssh/id_rsa ec2-user@${{ secrets.EC2_PUBLIC_IP }} << 'EOF'
           cd /home/ec2-user/text-editor/text-editor
           git pull origin master
           go build -o server ./server/main.go
