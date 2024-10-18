@@ -7,12 +7,12 @@
 
 This project is a real-time collaborative text editor that allows multiple users to edit a document simultaneously. It uses WOOT CRDT (WithOut Operational Transformation) for conflict-free editing, ensuring consistent document state across distributed users.
 
-Features
-Real-time collaboration: Multiple users can edit the same document.
-Conflict-free: Utilizes the WOOT CRDT algorithm for conflict resolution without the need for a central coordinator.
-Terminal-based: Built using Termbox for a command-line interface.
-File loading and saving: Easily load and save files within the editor.
-
+Features<ul>
+<li>Real-time collaboration: Multiple users can edit the same document.</li>
+<li>Conflict-free: Utilizes the WOOT CRDT algorithm for conflict resolution without the need for a central coordinator.</li>
+<li>Terminal-based: Built using Termbox for a command-line interface.</li>
+<li>File loading and saving: Easily load and save files within the editor.</li>;
+</ul>
 Installation
 Clone the repository:
 ```
