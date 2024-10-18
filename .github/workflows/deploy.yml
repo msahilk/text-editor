@@ -22,7 +22,7 @@ jobs:
 
     - name: Install Go and Deploy to EC2
       run: |
-        ssh -tt -i ~/.ssh/id_rsa ec2-user@${{ secrets.EC2_PUBLIC_IP }} << 'EOF'
+        ssh -i ~/.ssh/id_rsa ec2-user@${{ secrets.EC2_PUBLIC_IP }} << 'EOF'
         #sudo yum update -y
         #wget https://go.dev/dl/go1.23.2.linux-amd64.tar.gz
         #sudo rm -rf /usr/local/go
