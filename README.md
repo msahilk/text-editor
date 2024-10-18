@@ -16,6 +16,8 @@ Features<ul>
 Installation
 <br>
 Clone the repository:
+<br>
+
 ```
 git clone https://github.com/msahilk/text-editor.git
 ```
