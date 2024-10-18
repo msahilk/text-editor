@@ -11,7 +11,7 @@ Features<ul>
 <li>Real-time collaboration: Multiple users can edit the same document.</li>
 <li>Conflict-free: Utilizes the WOOT CRDT algorithm for conflict resolution without the need for a central coordinator.</li>
 <li>Terminal-based: Built using Termbox for a command-line interface.</li>
-<li>File loading and saving: Easily load and save files within the editor.</li>;
+<li>File loading and saving: Easily load and save files within the editor.</li>
 </ul>
 Installation
 Clone the repository:
