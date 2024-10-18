@@ -1,16 +1,21 @@
 package main
 
 import (
-	"github.com/gorilla/websocket"
-	"github.com/nsf/termbox-go"
 	"text-editor/client/editor"
 	"text-editor/crdt"
+
+	"github.com/gorilla/websocket"
+	"github.com/nsf/termbox-go"
 )
 
 type UIConfig struct {
-	Config editor.Config
+	EditorConfig editor.EditorConfig
 }
 
+// The text user interface is constructed using termbox-go.
+// termbox enables us to assign content to individual cells, making the cell the fundamental unit of the editor.
+
+// initUI establishes a new editor view and initiates the primary loop.
 func initUI(conn *websocket.Conn, conf UIConfig) error {
 	err := termbox.Init()
 	if err != nil {
@@ -18,7 +23,7 @@ func initUI(conn *websocket.Conn, conf UIConfig) error {
 	}
 	defer termbox.Close()
 
-	e = editor.NewEditor(conf.Config)
+	e = editor.NewEditor(conf.EditorConfig)
 	e.SetSize(termbox.Size())
 	e.SetText(crdt.Content(doc))
 	e.SendDraw()
@@ -32,12 +37,16 @@ func initUI(conn *websocket.Conn, conf UIConfig) error {
 	if err != nil {
 		return err
 	}
+
 	return nil
 }
 
+// mainLoop serves as the primary update cycle for the user interface.
 func mainLoop(conn *websocket.Conn) error {
+	// termboxChan facilitates the transmission and reception of termbox events.
 	termboxChan := getTermboxChan()
 
+	// msgChan enables the sending and receiving of messages.
 	msgChan := getMsgChan(conn)
 
 	for {

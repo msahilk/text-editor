@@ -3,33 +3,38 @@ package main
 import (
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"text-editor/commons"
+	"text-editor/crdt"
+
 	"github.com/gorilla/websocket"
 	"github.com/nsf/termbox-go"
 	"github.com/sirupsen/logrus"
-	"strconv"
-	"strings"
-	"text-editor/commons"
-	"text-editor/crdt"
-	"time"
 )
 
-// handleTermboxEvent processes terminal key events and triggers appropriate actions.
+// handleTermboxEvent processes keyboard input, updates the local CRDT document,
+// and transmits a message via WebSocket.
 func handleTermboxEvent(ev termbox.Event, conn *websocket.Conn) error {
-	// Only handle key events
+	// Focus on termbox key events (EventKey) exclusively.
 	if ev.Type == termbox.EventKey {
 		switch ev.Key {
 
-		// Exit on Escape or Ctrl+C
+		// Esc and Ctrl+C serve as the standard session termination keys.
 		case termbox.KeyEsc, termbox.KeyCtrlC:
-			return errors.New("editor exiting") // Error returned as an exit event
+			// Generate an error with the "editor" prefix for exit handling.
+			return errors.New("editor: exiting")
 
-		// Save document on Ctrl+S
+		// Ctrl+S is designated as the default key for content preservation.
 		case termbox.KeyCtrlS:
+			// Assign a default filename if none is provided.
 			if fileName == "" {
-				fileName = "editor-content.txt" // Default file name
+				fileName = "editor-content.txt"
 			}
 
-			// Save CRDT document to file
+			// Persist the CRDT to a file.
 			err := crdt.Save(fileName, &doc)
 			if err != nil {
 				logrus.Errorf("Failed to save to %s", fileName)
@@ -37,77 +42,79 @@ func handleTermboxEvent(ev termbox.Event, conn *websocket.Conn) error {
 				return err
 			}
 
-			// Show status message of successful save
-			e.StatusChan <- fmt.Sprintf("Saved to %s", fileName)
+			// Update the status bar.
+			e.StatusChan <- fmt.Sprintf("Saved document to %s", fileName)
 
-		// Load document on Ctrl+L
+		// Ctrl+L is set as the default key for file content retrieval.
 		case termbox.KeyCtrlL:
 			if fileName != "" {
-				logger.Log(logrus.InfoLevel, "LOADING")
+				logger.Log(logrus.InfoLevel, "LOADING DOCUMENT")
 				newDoc, err := crdt.Load(fileName)
 				if err != nil {
-					logrus.Errorf("Failed to load from %s", fileName)
-					e.StatusChan <- fmt.Sprintf("Failed to load from %s", fileName)
+					logrus.Errorf("failed to load file %s", fileName)
+					e.StatusChan <- fmt.Sprintf("Failed to load %s", fileName)
 					return err
 				}
-
-				// Load document and send it over the WebSocket connection
-				e.StatusChan <- fmt.Sprintf("Loaded from %s", fileName)
+				e.StatusChan <- fmt.Sprintf("Loading %s", fileName)
 				doc = newDoc
-				e.SetX(0) // Reset cursor to start
+				e.SetX(0)
 				e.SetText(crdt.Content(doc))
+
+				logger.Log(logrus.InfoLevel, "SENDING DOCUMENT")
 				docMsg := commons.Message{Type: commons.DocSyncMessage, Document: doc}
-				_ = conn.WriteJSON(docMsg)
+				_ = conn.WriteJSON(&docMsg)
 			} else {
-				e.StatusChan <- "No file to load"
+				e.StatusChan <- "No file to load!"
 			}
 
-		// Move left (arrow or Ctrl+B)
+		// Left arrow and Ctrl+B are configured for leftward cursor movement.
 		case termbox.KeyArrowLeft, termbox.KeyCtrlB:
 			e.MoveCursor(-1, 0)
 
-		// Move right (arrow or Ctrl+F)
+		// Right arrow and Ctrl+F facilitate rightward cursor movement.
 		case termbox.KeyArrowRight, termbox.KeyCtrlF:
 			e.MoveCursor(1, 0)
 
-		// Move up (arrow or Ctrl+P)
+		// Up arrow and Ctrl+P enable upward cursor movement.
 		case termbox.KeyArrowUp, termbox.KeyCtrlP:
 			e.MoveCursor(0, -1)
 
-		// Move down (arrow or Ctrl+N)
+		// Down arrow and Ctrl+N allow downward cursor movement.
 		case termbox.KeyArrowDown, termbox.KeyCtrlN:
 			e.MoveCursor(0, 1)
 
-		// Move to start of line on Home key
+		// Home key repositions the cursor to the line's start (X=0).
 		case termbox.KeyHome:
 			e.SetX(0)
 
-		// Move to end of text on End key
+		// End key shifts the cursor to the line's end (X = text length).
 		case termbox.KeyEnd:
 			e.SetX(len(e.Text))
 
-		// Delete (backspace or delete key)
-		case termbox.KeyBackspace, termbox.KeyBackspace2, termbox.KeyDelete:
+		// Backspace and Delete are assigned for character removal.
+		case termbox.KeyBackspace, termbox.KeyBackspace2:
+			performOperation(OperationDelete, ev, conn)
+		case termbox.KeyDelete:
 			performOperation(OperationDelete, ev, conn)
 
-		// Tab inserts 4 spaces
+		// Tab key inserts 4 spaces to emulate a tab character.
 		case termbox.KeyTab:
 			for i := 0; i < 4; i++ {
 				ev.Ch = ' '
 				performOperation(OperationInsert, ev, conn)
 			}
 
-		// Enter key inserts newline
+		// Enter key adds a newline character to the content.
 		case termbox.KeyEnter:
 			ev.Ch = '\n'
 			performOperation(OperationInsert, ev, conn)
 
-		// Space key inserts space
+		// Space key introduces a space character to the content.
 		case termbox.KeySpace:
 			ev.Ch = ' '
 			performOperation(OperationInsert, ev, conn)
 
-		// Insert any other character typed
+		// Any other key is considered for insertion.
 		default:
 			if ev.Ch != 0 {
 				performOperation(OperationInsert, ev, conn)
@@ -115,70 +122,66 @@ func handleTermboxEvent(ev termbox.Event, conn *websocket.Conn) error {
 		}
 	}
 
-	// Send a signal to redraw the editor
 	e.SendDraw()
 	return nil
 }
 
 const (
-	OperationInsert = 1
-	OperationDelete = 2
+	OperationInsert = iota
+	OperationDelete
 )
 
-// performOperation processes insert/delete operations and updates local CRDT state.
-func performOperation(operation int, ev termbox.Event, conn *websocket.Conn) {
-	ch := string(ev.Ch) // Convert key event to string character
+// performOperation executes a CRDT insert or delete action on the local document
+// and dispatches a message via WebSocket.
+func performOperation(opType int, ev termbox.Event, conn *websocket.Conn) {
+	// Retrieve position and value.
+	ch := string(ev.Ch)
 
-	var msg commons.Message // Message to be sent over WebSocket
+	var msg commons.Message
 
-	// Perform insert operation
-	switch operation {
+	// Adjust local state (CRDT) initially.
+	switch opType {
 	case OperationInsert:
-		// Insert character at the current cursor position in the local CRDT document
+		logger.Infof("LOCAL INSERT: %s at cursor position %v\n", ch, e.Cursor)
+
 		text, err := doc.Insert(e.Cursor+1, ch)
 		if err != nil {
 			e.SetText(text)
-			logger.Errorf("CRDT error: %v", err)
+			logger.Errorf("CRDT error: %v\n", err)
 		}
 		e.SetText(text)
-		e.MoveCursor(1, 0) // Move cursor right after inserting
 
-		// Create operation message to send over WebSocket
+		e.MoveCursor(1, 0)
 		msg = commons.Message{Type: "operation", Operation: commons.Operation{Type: "insert", Position: e.Cursor, Value: ch}}
 
-	// Perform delete operation
 	case OperationDelete:
-		//logger.Infof("LOCAL DELETE: %s at cursor position %v\n", ch, e.Cursor)
+		logger.Infof("LOCAL DELETE: cursor position %v\n", e.Cursor)
 
-		// Ensure cursor doesn't go out of bounds
 		if e.Cursor-1 < 0 {
 			e.Cursor = 0
 		}
 
-		// Delete character at the current cursor position
 		text := doc.Delete(e.Cursor)
 		e.SetText(text)
 
-		// Create delete operation message
 		msg = commons.Message{Type: "operation", Operation: commons.Operation{Type: "delete", Position: e.Cursor}}
-		e.MoveCursor(-1, 0) // Move cursor left after deletion
+		e.MoveCursor(-1, 0)
 	}
 
-	// Send message if connected to the server
+	// Transmit the message.
 	if e.IsConnected {
 		err := conn.WriteJSON(msg)
 		if err != nil {
 			e.IsConnected = false
-			e.StatusChan <- "Lost connection"
+			e.StatusChan <- "lost connection!"
 		}
 	}
 }
 
-// getTermboxChan returns a channel of termbox Events.
+// getTermboxChan yields a channel of termbox Events, continuously awaiting user input.
 func getTermboxChan() chan termbox.Event {
 	termboxChan := make(chan termbox.Event)
 
-	// Poll for terminal events and send them through the channel
 	go func() {
 		for {
 			termboxChan <- termbox.PollEvent()
@@ -188,110 +191,104 @@ func getTermboxChan() chan termbox.Event {
 	return termboxChan
 }
 
-// handleMsg handles incoming WebSocket messages and updates the local CRDT document accordingly.
+// handleMsg refreshes the CRDT document with the message contents.
 func handleMsg(msg commons.Message, conn *websocket.Conn) {
-
 	switch msg.Type {
-
-	// Sync local document with remote document received
 	case commons.DocSyncMessage:
-		//logger.Infof("DOCSYNC RECEIVED, UPDATING LOCAL DOC %+v\n", msg.Document)
+		logger.Infof("DOCSYNC RECEIVED, updating local doc %+v\n", msg.Document)
+
 		doc = msg.Document
 		e.SetText(crdt.Content(doc))
 
-	// Respond to document request by sending local document
 	case commons.DocReqMessage:
-		//logger.Infof("DOCREQ RECEIVED, SENDING LOCAL DOC TO %v\n", msg.ID)
+		logger.Infof("DOCREQ RECEIVED, sending local document to %v\n", msg.ID)
+
 		docMsg := commons.Message{Type: commons.DocSyncMessage, Document: doc, ID: msg.ID}
 		_ = conn.WriteJSON(&docMsg)
 
-	// Set site ID for the CRDT (for distributed editing)
 	case commons.SiteIDMessage:
 		siteID, err := strconv.Atoi(msg.Text)
 		if err != nil {
 			logger.Errorf("failed to set siteID, err: %v\n", err)
 		}
+
 		crdt.SiteID = siteID
-		logger.Infof("SITE ID %v, INTENDED: %v", crdt.SiteID, siteID)
+		logger.Infof("SITE ID %v, INTENDED SITE ID: %v", crdt.SiteID, siteID)
 
-	// Handle when a user joins the session
 	case commons.JoinMessage:
-		e.StatusChan <- fmt.Sprintf("%v joined", msg.Username)
+		e.StatusChan <- fmt.Sprintf("%s has joined the session!", msg.Username)
 
-	// Update the list of connected users
 	case commons.UsersMessage:
 		e.StatusMu.Lock()
 		e.Users = strings.Split(msg.Text, ",")
 		e.StatusMu.Unlock()
 
-	// Handle insert or delete operation messages
 	default:
 		switch msg.Operation.Type {
-
-		// Insert character into the local document and update UI
 		case "insert":
 			_, err := doc.Insert(msg.Operation.Position, msg.Operation.Value)
 			if err != nil {
 				logger.Errorf("failed to insert, err: %v\n", err)
 			}
+
 			e.SetText(crdt.Content(doc))
 			if msg.Operation.Position-1 <= e.Cursor {
 				e.MoveCursor(len(msg.Operation.Value), 0)
 			}
-			//logger.Infof("REMOTE INSERT: %s at position %v\n", msg.Operation.Value, msg.Operation.Position)
+			logger.Infof("REMOTE INSERT: %s at position %v\n", msg.Operation.Value, msg.Operation.Position)
 
-		// Delete character from the local document and update UI
 		case "delete":
 			_ = doc.Delete(msg.Operation.Position)
 			e.SetText(crdt.Content(doc))
 			if msg.Operation.Position-1 <= e.Cursor {
 				e.MoveCursor(-len(msg.Operation.Value), 0)
 			}
-			//logger.Infof("REMOTE DELETE: position %v\n", msg.Operation.Position)
-
+			logger.Infof("REMOTE DELETE: position %v\n", msg.Operation.Position)
 		}
 	}
 
-	// Debugging output for the document
-	//printDoc(doc)
+	// printDoc aids in debugging. Avoid commenting this out.
+	// It can be activated via the `-debug` flag.
+	// By default, printDoc doesn't log anything.
+	// This ensures debug logs don't consume excessive space on the user's system,
+	// and can be enabled as needed.
+	printDoc(doc)
 
-	// Send redraw signal to update the UI
 	e.SendDraw()
-
 }
 
-// getMsgChan returns a message channel that reads from a WebSocket connection.
+// getMsgChan returns a message channel that continuously reads from a websocket connection.
 func getMsgChan(conn *websocket.Conn) chan commons.Message {
-	msgChan := make(chan commons.Message)
-
-	// Continuously read WebSocket messages and send them to the channel
+	messageChan := make(chan commons.Message)
 	go func() {
 		for {
 			var msg commons.Message
 
-			// Read JSON from WebSocket
+			// Retrieve message.
 			err := conn.ReadJSON(&msg)
 			if err != nil {
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 					logger.Errorf("websocket error: %v", err)
 				}
-				// Handle disconnection
 				e.IsConnected = false
-				e.StatusChan <- "Lost connection"
+				e.StatusChan <- "lost connection!"
 				break
 			}
-			// Send the received message to the message channel
-			msgChan <- msg
+
+			logger.Infof("message received: %+v\n", msg)
+
+			// Transmit message through channel
+			messageChan <- msg
+
 		}
 	}()
-
-	return msgChan
+	return messageChan
 }
 
-// handleStatusMsg asynchronously waits for status messages and displays them.
+// handleStatusMsg asynchronously waits for messages from e.StatusChan and
+// renders the message upon arrival.
 func handleStatusMsg() {
 	for msg := range e.StatusChan {
-		// Lock the status message and display it
 		e.StatusMu.Lock()
 		e.StatusMsg = msg
 		e.ShowMsg = true
@@ -299,24 +296,21 @@ func handleStatusMsg() {
 
 		logger.Infof("got status message: %s", e.StatusMsg)
 
-		// Redraw the UI to display the message
 		e.SendDraw()
 		time.Sleep(3 * time.Second)
 
-		// Hide the status message after 3 seconds
 		e.StatusMu.Lock()
 		e.ShowMsg = false
 		e.StatusMu.Unlock()
 
-		// Redraw the UI to remove the message
 		e.SendDraw()
 	}
+
 }
 
-// drawLoop listens for draw signals and updates the UI when necessary.
 func drawLoop() {
 	for {
-		<-e.DrawChan // Wait for the signal to draw
-		e.Draw()     // Trigger the draw function to update the UI
+		<-e.DrawChan
+		e.Draw()
 	}
 }

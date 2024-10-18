@@ -3,78 +3,92 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"github.com/Pallinder/go-randomdata"
-	"github.com/sirupsen/logrus"
 	"os"
 	"strings"
+
 	"text-editor/client/editor"
 	"text-editor/commons"
 	"text-editor/crdt"
+
+	"github.com/Pallinder/go-randomdata"
+	"github.com/sirupsen/logrus"
 )
 
 var (
-	// Local document containing content.
+	// doc stores the local content of the document
 	doc = crdt.New()
 
+	// logger is the centralized logging system
 	logger = logrus.New()
 
-	// termbox-based editor.
-	e = editor.NewEditor(editor.Config{})
+	// e is the termbox-based text editor
+	e = editor.NewEditor(editor.EditorConfig{})
 
-	// The name of the file to load from and save to.
+	// fileName specifies the file for loading and saving
 	fileName string
 
-	// Parsed flags.
+	// flags contain the parsed command-line arguments
 	flags Flags
 )
 
 func main() {
+	// Initialize flags from command-line arguments
 	flags = parseFlags()
 
-	scan := bufio.NewScanner(os.Stdin)
+	s := bufio.NewScanner(os.Stdin)
 
+	// Generate a random username for the user
 	name := randomdata.SillyName()
 
+	// If login is enabled, prompt for a custom username
 	if flags.Login {
 		fmt.Print("Enter your name: ")
-		scan.Scan()
-		name = scan.Text()
+		s.Scan()
+		name = s.Text()
 	}
 
-	conn, _, err := Connect(flags)
+	conn, _, err := createConn(flags)
 	if err != nil {
-		fmt.Printf("Error connecting to server: %s\n", err)
+		fmt.Printf("Connection error, exiting: %s\n", err)
 		return
 	}
 	defer conn.Close()
 
-	msg := commons.Message{
-		Username: name,
-		Text:     "has joined.",
-		Type:     commons.JoinMessage,
-	}
+	// Notify other users about the new participant
+	msg := commons.Message{Username: name, Text: "has joined the session.", Type: commons.JoinMessage}
 	_ = conn.WriteJSON(msg)
+
+	logFile, debugLogFile, err := setupLogger(logger)
+	if err != nil {
+		fmt.Printf("Failed to setup logger, exiting: %s\n", err)
+		return
+	}
+	defer closeLogFiles(logFile, debugLogFile)
 
 	if flags.File != "" {
 		if doc, err = crdt.Load(flags.File); err != nil {
-			fmt.Printf("Error loading document: %s\n", err)
+			fmt.Printf("failed to load document: %s\n", err)
 			return
 		}
-
 	}
 
 	uiConfig := UIConfig{
-		editor.Config{ScrollEnabled: flags.Scroll},
+		EditorConfig: editor.EditorConfig{
+			ScrollEnabled: flags.Scroll,
+		},
 	}
 
 	err = initUI(conn, uiConfig)
 	if err != nil {
+
+		// Check if the error is related to editor events (e.g., exiting)
 		if strings.HasPrefix(err.Error(), "editor") {
-			fmt.Println("Exiting session")
+			fmt.Println("exiting session.")
 			return
 		}
-		fmt.Printf("Error initializing UI: %s\n", err)
+
+		// Display error message for actual errors
+		fmt.Printf("TUI error, exiting: %s\n", err)
 		return
 	}
-
 }

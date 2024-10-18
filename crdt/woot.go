@@ -8,6 +8,8 @@ import (
 	"sync"
 )
 
+// DONE
+// Document is a slice of characters
 type Document struct {
 	Characters []Character
 }
@@ -23,69 +25,74 @@ type Character struct {
 var (
 	mu sync.Mutex
 
+	// Unique variable per user to generate identifiers for characters in the document.
 	SiteID = 0
 
+	// Incremented whenever an insert operation takes place. Used to generate unique IDs for characters.
 	LocalClock = 0
 
+	// StartChar is placed at the start.
 	StartChar = Character{ID: "start", Visible: false, Value: "", IDPrevious: "", IDNext: "end"}
 
+	// EndChar is placed at the end.
 	EndChar = Character{ID: "end", Visible: false, Value: "", IDPrevious: "start", IDNext: ""}
 
-	ErrPosOutOfRange    = errors.New("position out of range")
-	ErrEmptyCharacter   = errors.New("empty character ID")
-	ErrBoundsNotPresent = errors.New("subsequence bound(s) not present")
+	ErrPositionOutOfBounds = errors.New("position out of bounds")
+	ErrEmptyWCharacter     = errors.New("empty char ID provided")
+	ErrBoundsNotPresent    = errors.New("subsequence bound(s) not present")
 )
 
+// New returns a new document with the start and end characters.
 func New() Document {
 	return Document{Characters: []Character{StartChar, EndChar}}
 }
 
+// Load creates a new CRDTdocument from a file.
 func Load(fileName string) (Document, error) {
 	doc := New()
-
 	content, err := os.ReadFile(fileName)
-
 	if err != nil {
 		return doc, err
 	}
-
 	lines := strings.Split(string(content), "\n")
 	pos := 1
-	for i, line := range lines {
-		for _, character := range line {
-			_, err = doc.Insert(pos, string(character))
+	for i := 0; i < len(lines); i++ {
+		for j := 0; j < len(lines[i]); j++ {
+			_, err := doc.Insert(pos, string(lines[i][j]))
 			if err != nil {
 				return doc, err
 			}
-
 			pos++
 		}
-		if i < len(lines)-1 {
+		if i < len(lines)-1 { // don't insert '\n' on last line
 			_, err := doc.Insert(pos, "\n")
 			if err != nil {
 				return doc, err
 			}
+			pos++
 		}
 	}
 	return doc, err
 }
 
+// Save writes the document to a file. Overwrites the file if it exists.
 func Save(fileName string, doc *Document) error {
 	return os.WriteFile(fileName, []byte(Content(*doc)), 0644)
 }
 
-// Utils
+// Utility functions
 
+// SetText sets the document to be equal to the passed document.
 func (doc *Document) SetText(newDoc Document) {
 	for _, char := range newDoc.Characters {
-		c := Character{ID: char.ID, Visible: char.Visible, Value: char.Value, IDPrevious: char.ID, IDNext: char.ID}
+		c := Character{ID: char.ID, Visible: char.Visible, Value: char.Value, IDPrevious: char.IDPrevious, IDNext: char.IDNext}
 		doc.Characters = append(doc.Characters, c)
 	}
 }
 
+// Content returns the content of the document.
 func Content(doc Document) string {
 	value := ""
-
 	for _, char := range doc.Characters {
 		if char.Visible {
 			value += char.Value
@@ -94,6 +101,7 @@ func Content(doc Document) string {
 	return value
 }
 
+// IthVisible returns the ith visible character in the document.
 func IthVisible(doc Document, position int) Character {
 	count := 0
 
@@ -109,36 +117,41 @@ func IthVisible(doc Document, position int) Character {
 	return Character{ID: "-1"}
 }
 
+// Length returns the length of the document.
 func (doc *Document) Length() int {
 	return len(doc.Characters)
 }
 
+// ElementAt returns the character at the given position.
 func (doc *Document) ElementAt(position int) (Character, error) {
 	if position < 0 || position >= doc.Length() {
-		return Character{}, ErrPosOutOfRange
+		return Character{}, ErrPositionOutOfBounds
 	}
 
 	return doc.Characters[position], nil
 }
 
+// Position returns the position of the given character.
 func (doc *Document) Position(charID string) int {
-	for i, char := range doc.Characters {
-		if char.ID == charID {
-			return i + 1
+	for position, char := range doc.Characters {
+		if charID == char.ID {
+			return position + 1
 		}
 	}
+
 	return -1
 }
 
+// Left returns the ID of the character to the left of the given character.
 func (doc *Document) Left(charID string) string {
 	i := doc.Position(charID)
-
 	if i <= 0 {
 		return doc.Characters[i].ID
 	}
 	return doc.Characters[i-1].ID
 }
 
+// Right returns the ID of the character to the right of the given character.
 func (doc *Document) Right(charID string) string {
 	i := doc.Position(charID)
 	if i >= len(doc.Characters)-1 {
@@ -147,11 +160,13 @@ func (doc *Document) Right(charID string) string {
 	return doc.Characters[i+1].ID
 }
 
+// Contains checks if a character is present in the document.
 func (doc *Document) Contains(charID string) bool {
 	position := doc.Position(charID)
 	return position != -1
 }
 
+// Find returns the character at the ID.
 func (doc *Document) Find(id string) Character {
 	for _, char := range doc.Characters {
 		if char.ID == id {
@@ -162,87 +177,95 @@ func (doc *Document) Find(id string) Character {
 	return Character{ID: "-1"}
 }
 
-func (doc *Document) Subsequence(characterStart Character, characterEnd Character) ([]Character, error) {
+// Subsequence returns the content between the positions.
+func (doc *Document) Subsequence(wcharacterStart, wcharacterEnd Character) ([]Character, error) {
+	startPosition := doc.Position(wcharacterStart.ID)
+	endPosition := doc.Position(wcharacterEnd.ID)
 
-	startPos := doc.Position(characterStart.ID)
-	endPos := doc.Position(characterEnd.ID)
-
-	if startPos == -1 || endPos == -1 {
+	if startPosition == -1 || endPosition == -1 {
 		return doc.Characters, ErrBoundsNotPresent
 	}
 
-	if startPos > endPos {
+	if startPosition > endPosition {
 		return doc.Characters, ErrBoundsNotPresent
 	}
 
-	if startPos == endPos {
+	if startPosition == endPosition {
 		return []Character{}, nil
 	}
 
-	return doc.Characters[startPos : endPos-1], nil
+	return doc.Characters[startPosition : endPosition-1], nil
 }
 
 // Operations
 
-func (doc *Document) InsertLocal(char Character, position int) (*Document, error) {
-
+// LocalInsert inserts the character into the document.
+func (doc *Document) LocalInsert(char Character, position int) (*Document, error) {
 	if position <= 0 || position >= doc.Length() {
-		return doc, ErrPosOutOfRange
+		return doc, ErrPositionOutOfBounds
 	}
 
 	if char.ID == "" {
-		return doc, ErrEmptyCharacter
+		return doc, ErrEmptyWCharacter
 	}
-	// Insert character between [:position] and [position:]
-	before := doc.Characters[:position]
-	after := doc.Characters[position:]
 
-	inserted := []Character{char}
+	doc.Characters = append(doc.Characters[:position],
+		append([]Character{char}, doc.Characters[position:]...)...,
+	)
 
-	before = append(before, inserted...)
-
-	doc.Characters = append(before, after...)
-
+	// Update next and previous pointers.
 	doc.Characters[position-1].IDNext = char.ID
 	doc.Characters[position+1].IDPrevious = char.ID
 
 	return doc, nil
 }
 
+// IntegrateInsert inserts the given Character into the Document
+// Characters based off of the previous & next Character
 func (doc *Document) IntegrateInsert(char, charPrev, charNext Character) (*Document, error) {
+	// Get the subsequence.
 
+	// Handle invalid subsequence.
 	subsequence, err := doc.Subsequence(charPrev, charNext)
 	if err != nil {
 		return doc, err
 	}
 
+	// Get the position of the next character.
 	position := doc.Position(charNext.ID)
 	position--
 
+	// Handle empty subsequence (Insert at current position)
 	if len(subsequence) == 0 {
-		return doc.InsertLocal(char, position)
+		return doc.LocalInsert(char, position)
 	}
 
+	// Handle single character subsequence (Insert at previous position)
 	if len(subsequence) == 1 {
-		return doc.InsertLocal(char, position-1)
+		return doc.LocalInsert(char, position-1)
 	}
 
+	// Find the correct position to insert the character.
 	i := 1
-
 	for i < len(subsequence)-1 && subsequence[i].ID < char.ID {
 		i++
 	}
+	// Insert the character at the correct position.
 	return doc.IntegrateInsert(char, subsequence[i-1], subsequence[i])
 }
 
+// GenerateInsert generates an insert operation for the given position and value.
 func (doc *Document) GenerateInsert(position int, value string) (*Document, error) {
+	// Increment local clock.
 	mu.Lock()
 	LocalClock++
 	mu.Unlock()
 
+	// Get previous and next characters.
 	charPrev := IthVisible(*doc, position-1)
 	charNext := IthVisible(*doc, position)
 
+	// Use defaults.
 	if charPrev.ID == "-1" {
 		charPrev = doc.Find("start")
 	}
@@ -261,27 +284,26 @@ func (doc *Document) GenerateInsert(position int, value string) (*Document, erro
 	return doc.IntegrateInsert(char, charPrev, charNext)
 }
 
+// IntegrateDelete marks the given character for deletion.
 func (doc *Document) IntegrateDelete(char Character) *Document {
 	position := doc.Position(char.ID)
-
 	if position == -1 {
 		return doc
 	}
 
+	// This is how deletion is done.
 	doc.Characters[position-1].Visible = false
 
 	return doc
-
 }
 
+// GenerateDelete generates a delete operation for the given position.
 func (doc *Document) GenerateDelete(position int) *Document {
 	char := IthVisible(*doc, position)
-
 	return doc.IntegrateDelete(char)
-
 }
 
-// Implement CRDT interface
+// Implement the CRDT interface
 
 func (doc *Document) Insert(position int, value string) (string, error) {
 	newDoc, err := doc.GenerateInsert(position, value)
@@ -290,7 +312,6 @@ func (doc *Document) Insert(position int, value string) (string, error) {
 	}
 
 	return Content(*newDoc), nil
-
 }
 
 func (doc *Document) Delete(position int) string {

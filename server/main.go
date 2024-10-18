@@ -2,56 +2,41 @@ package main
 
 import (
 	"flag"
-	"github.com/fatih/color"
-	"github.com/google/uuid"
-	"github.com/gorilla/websocket"
 	"log"
 	"net/http"
 	"strconv"
 	"sync"
-	"text-editor/commons"
 	"time"
+
+	"text-editor/commons"
+
+	"github.com/fatih/color"
+	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 )
 
+// Clients manages connected client information and operations.
 type Clients struct {
-	list               map[uuid.UUID]*client
-	mu                 sync.RWMutex
-	deleteRequests     chan deleteRequest
-	readRequests       chan readRequest
-	addRequests        chan *client
+	// Stores active client data.
+	list map[uuid.UUID]*client
+
+	// Guards against concurrent map access.
+	mu sync.RWMutex
+
+	// Channel for client removal requests.
+	deleteRequests chan deleteRequest
+
+	// Channel for client retrieval requests.
+	readRequests chan readRequest
+
+	// Channel for adding new clients.
+	addRequests chan *client
+
+	// Channel for updating client usernames.
 	nameUpdateRequests chan nameUpdate
 }
 
-type client struct {
-	Conn   *websocket.Conn
-	SiteID string
-	id     uuid.UUID
-
-	writeMutex sync.Mutex
-	mutex      sync.Mutex
-
-	Username string
-}
-
-type deleteRequest struct {
-	id uuid.UUID
-
-	done chan int
-}
-
-type readRequest struct {
-	readAll bool
-
-	id uuid.UUID
-
-	resp chan *client
-}
-
-type nameUpdate struct {
-	newName string
-	id      uuid.UUID
-}
-
+// NewClients initializes and returns a Clients instance.
 func NewClients() *Clients {
 	return &Clients{
 		list:               make(map[uuid.UUID]*client),
@@ -63,72 +48,95 @@ func NewClients() *Clients {
 	}
 }
 
+// client represents a connected user's session.
+type client struct {
+	Conn   *websocket.Conn
+	SiteID string
+	id     uuid.UUID
+
+	// Protects against concurrent WebSocket writes.
+	writeMu sync.Mutex
+
+	// Guards client data modifications.
+	mu sync.Mutex
+
+	Username string
+}
+
 var (
+	// Unique identifier for each client, increments monotonically.
 	siteID = 0
 
-	mu sync.RWMutex
+	// Protects siteID increments.
+	mu sync.Mutex
 
-	upgrade = websocket.Upgrader{}
+	// Converts HTTP connections to WebSocket.
+	upgrader = websocket.Upgrader{}
 
+	// Buffers client messages.
 	messageChan = make(chan commons.Message)
 
+	// Buffers document synchronization messages.
 	syncChan = make(chan commons.Message)
 
+	// Manages all connected clients.
 	clients = NewClients()
 )
 
 func main() {
-	address := flag.String("Server", ":8080", "Server's network address")
+	addr := flag.String("addr", ":8080", "Server's network address")
 	flag.Parse()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", handleConnection)
+	mux.HandleFunc("/", handleConn)
 
+	// Manages client state.
 	go clients.handle()
 
+	// Processes incoming messages.
 	go handleMsg()
 
+	// Manages document synchronization.
 	go handleSync()
 
-	log.Printf("Starting server on %s", *address)
+	// Initializes the server.
+	log.Printf("Starting server on %s", *addr)
 
 	server := &http.Server{
-		Addr:         *address,
+		Addr:         *addr,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
 		Handler:      mux,
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 5 * time.Second,
 	}
 
 	err := server.ListenAndServe()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Server startup failed, terminating.", err)
 	}
-
 }
 
-func handleConnection(w http.ResponseWriter, r *http.Request) {
-
-	conn, err := upgrade.Upgrade(w, r, nil)
+// handleConn manages new WebSocket connections and message reading.
+func handleConn(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		color.Red("Error upgrading connection: %s", err)
+		color.Red("WebSocket upgrade failed: %v\n", err)
 		conn.Close()
 		return
-
 	}
-
 	defer conn.Close()
 
 	clientID := uuid.New()
 
+	// Safely increment and assign siteID.
 	mu.Lock()
 	siteID++
 
 	client := &client{
-		Conn:       conn,
-		SiteID:     strconv.Itoa(siteID),
-		id:         clientID,
-		writeMutex: sync.Mutex{},
-		mutex:      sync.Mutex{},
+		Conn:    conn,
+		SiteID:  strconv.Itoa(siteID),
+		id:      clientID,
+		writeMu: sync.Mutex{},
+		mu:      sync.Mutex{},
 	}
 	mu.Unlock()
 
@@ -138,55 +146,60 @@ func handleConnection(w http.ResponseWriter, r *http.Request) {
 	clients.broadcastOne(siteIDMsg, clientID)
 
 	docReq := commons.Message{Type: commons.DocReqMessage, ID: clientID}
-	clients.broadcastAnyOther(docReq, clientID)
+	clients.broadcastOneExcept(docReq, clientID)
 
 	clients.sendUsernames()
 
+	// Continuously read and process messages from the client.
 	for {
 		var msg commons.Message
-
 		if err := client.read(&msg); err != nil {
-			color.Red("Failed to read message. Closing client connection with %s, error: %s", client.Username, err)
+			color.Red("Message read failed. Closing %s's connection. Error: %s", client.Username, err)
 			return
 		}
 
+		// Route document sync messages separately.
 		if msg.Type == commons.DocSyncMessage {
 			syncChan <- msg
 			continue
 		}
 
+		// Set message origin.
 		msg.ID = clientID
 
+		// Queue message for processing.
 		messageChan <- msg
-
 	}
 }
 
+// handleMsg processes and broadcasts messages from clients.
 func handleMsg() {
 	for {
+		// Retrieve next message.
 		msg := <-messageChan
 
+		// Log message details.
 		t := time.Now().Format(time.ANSIC)
-
 		if msg.Type == commons.JoinMessage {
 			clients.updateName(msg.ID, msg.Username)
 			color.Green("%s >> %s %s (ID: %s)\n", t, msg.Username, msg.Text, msg.ID)
+			clients.sendUsernames()
 		} else if msg.Type == "operation" {
 			color.Green("operation >> %+v from ID=%s\n", msg.Operation, msg.ID)
 		} else {
-			color.Green("%s >> unknown message type: %v\n", t, msg)
+			color.Green("%s >> unrecognized message type:  %v\n", t, msg)
 			clients.sendUsernames()
 			continue
 		}
+
 		clients.broadcastAllExcept(msg, msg.ID)
 	}
-
 }
 
+// handleSync manages document synchronization messages.
 func handleSync() {
 	for {
 		syncMsg := <-syncChan
-
 		switch syncMsg.Type {
 		case commons.DocSyncMessage:
 			clients.broadcastOne(syncMsg, syncMsg.ID)
@@ -197,6 +210,7 @@ func handleSync() {
 	}
 }
 
+// handle ensures thread-safe access to the Clients struct.
 func (c *Clients) handle() {
 	for {
 		select {
@@ -219,14 +233,35 @@ func (c *Clients) handle() {
 			c.list[client.id] = client
 			c.mu.Unlock()
 		case n := <-c.nameUpdateRequests:
-			c.list[n.id].mutex.Lock()
+			c.list[n.id].mu.Lock()
 			c.list[n.id].Username = n.newName
-			c.list[n.id].mutex.Unlock()
+			c.list[n.id].mu.Unlock()
 		}
-
 	}
 }
 
+// deleteRequest facilitates client removal from the client list.
+type deleteRequest struct {
+	// Client to be removed.
+	id uuid.UUID
+
+	// Signals completion of deletion.
+	done chan int
+}
+
+// readRequest facilitates client information retrieval.
+type readRequest struct {
+	// Indicates if all clients should be retrieved.
+	readAll bool
+
+	// Specific client ID to retrieve (if not readAll).
+	id uuid.UUID
+
+	// Channel for sending retrieved client(s).
+	resp chan *client
+}
+
+// getAll retrieves all active clients.
 func (c *Clients) getAll() chan *client {
 	c.mu.RLock()
 	resp := make(chan *client, len(c.list))
@@ -235,6 +270,7 @@ func (c *Clients) getAll() chan *client {
 	return resp
 }
 
+// get retrieves a specific client by ID.
 func (c *Clients) get(id uuid.UUID) chan *client {
 	resp := make(chan *client)
 
@@ -242,76 +278,91 @@ func (c *Clients) get(id uuid.UUID) chan *client {
 	return resp
 }
 
+// add introduces a new client to the list.
 func (c *Clients) add(client *client) {
 	c.addRequests <- client
 }
 
-func (c *Clients) updateName(id uuid.UUID, newName string) {
-	c.nameUpdateRequests <- nameUpdate{newName, id}
+// nameUpdate facilitates client username changes.
+type nameUpdate struct {
+	id      uuid.UUID
+	newName string
 }
 
+// updateName modifies a client's username.
+func (c *Clients) updateName(id uuid.UUID, newName string) {
+	c.nameUpdateRequests <- nameUpdate{id, newName}
+}
+
+// delete removes a client from the active list.
 func (c *Clients) delete(id uuid.UUID) {
-	req := deleteRequest{id: id, done: make(chan int)}
+	req := deleteRequest{id, make(chan int)}
 	c.deleteRequests <- req
 	<-req.done
 	c.sendUsernames()
 }
 
+// broadcastAll sends a message to every active client.
 func (c *Clients) broadcastAll(msg commons.Message) {
-	color.Blue("sending message to all users. Text: %s", msg.Text)
+	color.Blue("Broadcasting to all users. Text: %s", msg.Text)
 	for client := range c.getAll() {
 		if err := client.send(msg); err != nil {
-			color.Red("Error sending message to all users: %s", err)
+			color.Red("ERROR: %s", err)
 			c.delete(client.id)
 		}
 	}
 }
 
-func (c *Clients) broadcastOne(msg commons.Message, id uuid.UUID) {
-	client := <-c.get(id)
+// broadcastAllExcept sends a message to all clients except one.
+func (c *Clients) broadcastAllExcept(msg commons.Message, except uuid.UUID) {
+	for client := range c.getAll() {
+		if client.id == except {
+			continue
+		}
+		if err := client.send(msg); err != nil {
+			color.Red("ERROR: %s", err)
+			c.delete(client.id)
+		}
+	}
+}
 
+// broadcastOne sends a message to a specific client.
+func (c *Clients) broadcastOne(msg commons.Message, dst uuid.UUID) {
+	client := <-c.get(dst)
 	if err := client.send(msg); err != nil {
-		color.Red("Error sending to client: %s, %s", client.Username, err)
+		color.Red("ERROR: %s", err)
 		c.delete(client.id)
 	}
 }
 
-func (c *Clients) broadcastAllExcept(msg commons.Message, id uuid.UUID) {
+// broadcastOneExcept sends a message to any client except one.
+func (c *Clients) broadcastOneExcept(msg commons.Message, except uuid.UUID) {
 	for client := range c.getAll() {
-		if client.id != id {
-			if err := client.send(msg); err != nil {
-				color.Red("Error sending message to client %s, %s", client.Username, err)
-				c.delete(client.id)
-			}
+		if client.id == except {
+			continue
 		}
+		if err := client.send(msg); err != nil {
+			color.Red("ERROR: %s", err)
+			c.delete(client.id)
+			continue
+		}
+		break
 	}
 }
 
-func (c *Clients) broadcastAnyOther(msg commons.Message, id uuid.UUID) {
-	for client := range c.getAll() {
-		if client.id != id {
-			if err := client.send(msg); err != nil {
-				color.Red("Error sending message to client %s, %s", client.Username, err)
-				c.delete(client.id)
-				continue
-			}
-			return
-		}
-	}
-}
-
+// close terminates a client's connection and removes them from the list.
 func (c *Clients) close(id uuid.UUID) {
 	c.mu.RLock()
 	client, ok := c.list[id]
 	if ok {
 		if err := client.Conn.Close(); err != nil {
-			color.Red("Error closing connection: %s", err)
+			color.Red("Connection closure failed: %s\n", err)
 		}
 	} else {
-		color.Red("Client %s not found", id)
+		color.Red("Connection closure failed: client not found")
+		return
 	}
-
-	color.Blue("Closing connection with %s", client.Username)
+	color.Red("Removing %v from client list.\n", c.list[id].Username)
 	c.mu.RUnlock()
 
 	c.mu.Lock()
@@ -320,38 +371,39 @@ func (c *Clients) close(id uuid.UUID) {
 
 }
 
-func (c *client) send(msg interface{}) error {
-	c.writeMutex.Lock()
-	err := c.Conn.WriteJSON(msg)
-	c.writeMutex.Unlock()
-	return err
-
-}
-
+// read retrieves a message from the client's connection.
 func (c *client) read(msg *commons.Message) error {
 	err := c.Conn.ReadJSON(msg)
 
-	c.mutex.Lock()
+	c.mu.Lock()
 	name := c.Username
-	c.mutex.Unlock()
+	c.mu.Unlock()
 
 	if err != nil {
 		if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-			color.Red("Failed to read message from client %s: %s", c.Username, err)
+			color.Red("Message read from %s failed: %v", name, err)
 		}
-		color.Red("client %v disconnected", name)
+		color.Red("Client %v disconnected", name)
+		clients.delete(c.id)
 		return err
-
 	}
 	return nil
 }
 
+// send transmits a message over the client's connection.
+func (c *client) send(v interface{}) error {
+	c.writeMu.Lock()
+	err := c.Conn.WriteJSON(v)
+	c.writeMu.Unlock()
+	return err
+}
+
+// sendUsernames broadcasts the list of active users to all clients.
 func (c *Clients) sendUsernames() {
 	var users string
-
 	for client := range c.getAll() {
-		users += client.Username
-		users += ","
+		users += client.Username + ","
 	}
+
 	syncChan <- commons.Message{Text: users, Type: commons.UsersMessage}
 }
