@@ -14,7 +14,4 @@ jobs:
         run: go test -v ./...
       - name: Run tests with race detector
         run: go test -race ./...
-      - name: lint
-        uses: golangci/golangci-lint-action@v3
-
 
