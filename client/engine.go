@@ -144,15 +144,16 @@ func performOperation(opType int, ev termbox.Event, conn *websocket.Conn) {
 	case OperationInsert:
 		logger.Infof("LOCAL INSERT: %s at cursor position %v\n", ch, e.Cursor)
 
-		text, err := doc.Insert(e.Cursor+1, ch)
+		char, err := doc.GenerateInsertChar(e.Cursor+1, ch)
 		if err != nil {
-			e.SetText(text)
 			logger.Errorf("CRDT error: %v\n", err)
+			return
 		}
-		e.SetText(text)
+		e.SetText(crdt.Content(doc))
 
 		e.MoveCursor(1, 0)
-		msg = commons.Message{Type: "operation", Operation: commons.Operation{Type: "insert", Position: e.Cursor, Value: ch}}
+		msg = commons.Message{Type: "operation", Operation: commons.Operation{Type: "insert", Position: e.Cursor, Value: ch, Char: char}}
+		logOp(msg.Operation)
 
 	case OperationDelete:
 		logger.Infof("LOCAL DELETE: cursor position %v\n", e.Cursor)
@@ -161,10 +162,14 @@ func performOperation(opType int, ev termbox.Event, conn *websocket.Conn) {
 			e.Cursor = 0
 		}
 
-		text := doc.Delete(e.Cursor)
-		e.SetText(text)
+		char, ok := doc.GenerateDeleteChar(e.Cursor)
+		if !ok {
+			return
+		}
+		e.SetText(crdt.Content(doc))
 
-		msg = commons.Message{Type: "operation", Operation: commons.Operation{Type: "delete", Position: e.Cursor}}
+		msg = commons.Message{Type: "operation", Operation: commons.Operation{Type: "delete", Position: e.Cursor, Char: char}}
+		logOp(msg.Operation)
 		e.MoveCursor(-1, 0)
 	}
 
@@ -198,6 +203,15 @@ func handleMsg(msg commons.Message, conn *websocket.Conn) {
 		logger.Infof("DOCSYNC RECEIVED, updating local doc %+v\n", msg.Document)
 
 		doc = msg.Document
+
+		// Replay edits made or received while the snapshot was in flight.
+		// Integration is idempotent, so edits already in the snapshot are skipped.
+		synced = true
+		for _, op := range preSyncLog {
+			applyRemoteOp(op)
+		}
+		preSyncLog = nil
+
 		e.SetText(crdt.Content(doc))
 
 	case commons.DocReqMessage:
@@ -225,25 +239,30 @@ func handleMsg(msg commons.Message, conn *websocket.Conn) {
 
 	default:
 		switch msg.Operation.Type {
-		case "insert":
-			_, err := doc.Insert(msg.Operation.Position, msg.Operation.Value)
-			if err != nil {
-				logger.Errorf("failed to insert, err: %v\n", err)
+		case "insert", "delete":
+			// Remember where the cursor-relative edit happened so the cursor
+			// keeps pointing at the same text.
+			var before int
+			if msg.Operation.Type == "delete" {
+				before = doc.VisiblePosition(msg.Operation.Char.ID)
 			}
 
+			logOp(msg.Operation)
+			applyRemoteOp(msg.Operation)
 			e.SetText(crdt.Content(doc))
-			if msg.Operation.Position-1 <= e.Cursor {
-				e.MoveCursor(len(msg.Operation.Value), 0)
-			}
-			logger.Infof("REMOTE INSERT: %s at position %v\n", msg.Operation.Value, msg.Operation.Position)
 
-		case "delete":
-			_ = doc.Delete(msg.Operation.Position)
-			e.SetText(crdt.Content(doc))
-			if msg.Operation.Position-1 <= e.Cursor {
-				e.MoveCursor(-len(msg.Operation.Value), 0)
+			switch msg.Operation.Type {
+			case "insert":
+				if p := doc.VisiblePosition(msg.Operation.Char.ID); p != -1 && p <= e.Cursor {
+					e.MoveCursor(1, 0)
+				}
+				logger.Infof("REMOTE INSERT: %s (id %s)\n", msg.Operation.Char.Value, msg.Operation.Char.ID)
+			case "delete":
+				if before != -1 && before <= e.Cursor {
+					e.MoveCursor(-1, 0)
+				}
+				logger.Infof("REMOTE DELETE: id %s\n", msg.Operation.Char.ID)
 			}
-			logger.Infof("REMOTE DELETE: position %v\n", msg.Operation.Position)
 		}
 	}
 
@@ -312,5 +331,53 @@ func drawLoop() {
 	for {
 		<-e.DrawChan
 		e.Draw()
+	}
+}
+
+var (
+	// pendingOps holds remote edits whose dependencies have not arrived yet.
+	pendingOps []commons.Operation
+
+	// synced reports whether this client has received the document snapshot.
+	synced bool
+
+	// preSyncLog records every edit until the snapshot arrives, so none are
+	// lost when the snapshot replaces the local document.
+	preSyncLog []commons.Operation
+)
+
+// logOp records an edit until the initial document snapshot has been applied.
+func logOp(op commons.Operation) {
+	if !synced {
+		preSyncLog = append(preSyncLog, op)
+	}
+}
+
+// applyRemoteOp integrates a remote edit into the local document. Edits that
+// depend on characters not yet received are parked and retried later.
+func applyRemoteOp(op commons.Operation) {
+	pendingOps = append(pendingOps, op)
+
+	for progress := true; progress; {
+		progress = false
+		remaining := pendingOps[:0]
+		for _, p := range pendingOps {
+			var err error
+			switch p.Type {
+			case "insert":
+				err = doc.RemoteInsert(p.Char)
+			case "delete":
+				err = doc.RemoteDelete(p.Char)
+			}
+			if errors.Is(err, crdt.ErrNotReady) {
+				remaining = append(remaining, p)
+				continue
+			}
+			if err != nil {
+				logger.Errorf("failed to apply %s: %v", p.Type, err)
+			}
+			progress = true
+		}
+		pendingOps = remaining
 	}
 }

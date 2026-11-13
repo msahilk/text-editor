@@ -213,54 +213,67 @@ func (doc *Document) LocalInsert(char Character, position int) (*Document, error
 		append([]Character{char}, doc.Characters[position:]...)...,
 	)
 
-	// Update next and previous pointers.
-	doc.Characters[position-1].IDNext = char.ID
-	doc.Characters[position+1].IDPrevious = char.ID
+	// Note: neighbours' IDPrevious/IDNext are intentionally left unchanged.
+	// In WOOT they record where a character was originally inserted, and the
+	// integration rule depends on them never changing.
 
 	return doc, nil
 }
 
-// IntegrateInsert inserts the given Character into the Document
-// Characters based off of the previous & next Character
+// IntegrateInsert places char between charPrev and charNext using the WOOT
+// integration rule. Characters that were inserted concurrently into the same
+// gap are ordered by ID, so every replica ends up with the same order no matter
+// which order the operations arrive in.
 func (doc *Document) IntegrateInsert(char, charPrev, charNext Character) (*Document, error) {
-	// Get the subsequence.
-
-	// Handle invalid subsequence.
 	subsequence, err := doc.Subsequence(charPrev, charNext)
 	if err != nil {
 		return doc, err
 	}
 
-	// Get the position of the next character.
-	position := doc.Position(charNext.ID)
-	position--
+	// 1-based positions of the bounds.
+	prevPos := doc.Position(charPrev.ID)
+	nextPos := doc.Position(charNext.ID)
 
-	// Handle empty subsequence (Insert at current position)
+	// Nothing between the bounds: insert directly before charNext.
 	if len(subsequence) == 0 {
-		return doc.LocalInsert(char, position)
+		return doc.LocalInsert(char, nextPos-1)
 	}
 
-	// Handle single character subsequence (Insert at previous position)
-	if len(subsequence) == 1 {
-		return doc.LocalInsert(char, position-1)
+	// Only consider characters whose own neighbours lie outside the
+	// (charPrev, charNext) window. These are the characters that were
+	// inserted concurrently into this same gap.
+	candidates := []Character{charPrev}
+	for _, c := range subsequence {
+		if doc.Position(c.IDPrevious) <= prevPos && doc.Position(c.IDNext) >= nextPos {
+			candidates = append(candidates, c)
+		}
 	}
+	candidates = append(candidates, charNext)
 
-	// Find the correct position to insert the character.
+	// Order concurrent inserts deterministically by ID.
 	i := 1
-	for i < len(subsequence)-1 && subsequence[i].ID < char.ID {
+	for i < len(candidates)-1 && candidates[i].ID < char.ID {
 		i++
 	}
-	// Insert the character at the correct position.
-	return doc.IntegrateInsert(char, subsequence[i-1], subsequence[i])
+
+	return doc.IntegrateInsert(char, candidates[i-1], candidates[i])
 }
 
-// GenerateInsert generates an insert operation for the given position and value.
-func (doc *Document) GenerateInsert(position int, value string) (*Document, error) {
-	// Increment local clock.
+// newCharID returns an identifier that is unique across all sites.
+// The separator matters: without it, site 1 / clock 12 and site 11 / clock 2
+// would both produce "112".
+func newCharID() string {
 	mu.Lock()
 	LocalClock++
+	clock := LocalClock
 	mu.Unlock()
 
+	return fmt.Sprintf("%d.%d", SiteID, clock)
+}
+
+// GenerateInsertChar inserts value at the given visible position and returns
+// the new Character so that it can be sent to other replicas.
+func (doc *Document) GenerateInsertChar(position int, value string) (Character, error) {
 	// Get previous and next characters.
 	charPrev := IthVisible(*doc, position-1)
 	charNext := IthVisible(*doc, position)
@@ -274,14 +287,21 @@ func (doc *Document) GenerateInsert(position int, value string) (*Document, erro
 	}
 
 	char := Character{
-		ID:         fmt.Sprint(SiteID) + fmt.Sprint(LocalClock),
+		ID:         newCharID(),
 		Visible:    true,
 		Value:      value,
 		IDPrevious: charPrev.ID,
 		IDNext:     charNext.ID,
 	}
 
-	return doc.IntegrateInsert(char, charPrev, charNext)
+	_, err := doc.IntegrateInsert(char, charPrev, charNext)
+	return char, err
+}
+
+// GenerateInsert generates an insert operation for the given position and value.
+func (doc *Document) GenerateInsert(position int, value string) (*Document, error) {
+	_, err := doc.GenerateInsertChar(position, value)
+	return doc, err
 }
 
 // IntegrateDelete marks the given character for deletion.
@@ -297,10 +317,74 @@ func (doc *Document) IntegrateDelete(char Character) *Document {
 	return doc
 }
 
+// GenerateDeleteChar deletes the character at the given visible position and
+// returns it so that it can be sent to other replicas. ok is false if there is
+// no character at that position.
+func (doc *Document) GenerateDeleteChar(position int) (char Character, ok bool) {
+	char = IthVisible(*doc, position)
+	if char.ID == "-1" {
+		return char, false
+	}
+	doc.IntegrateDelete(char)
+	return char, true
+}
+
 // GenerateDelete generates a delete operation for the given position.
 func (doc *Document) GenerateDelete(position int) *Document {
-	char := IthVisible(*doc, position)
-	return doc.IntegrateDelete(char)
+	doc.GenerateDeleteChar(position)
+	return doc
+}
+
+// Remote operations
+
+// ErrNotReady is returned when a remote operation depends on a character this
+// replica has not received yet. The caller should retry it later.
+var ErrNotReady = errors.New("operation not ready: missing dependency")
+
+// RemoteInsert integrates a character created by another replica.
+// It is idempotent: applying the same character twice has no effect.
+func (doc *Document) RemoteInsert(char Character) error {
+	if doc.Contains(char.ID) {
+		return nil
+	}
+
+	charPrev := doc.Find(char.IDPrevious)
+	charNext := doc.Find(char.IDNext)
+	if charPrev.ID == "-1" || charNext.ID == "-1" {
+		return ErrNotReady
+	}
+
+	_, err := doc.IntegrateInsert(char, charPrev, charNext)
+	return err
+}
+
+// RemoteDelete hides a character deleted by another replica.
+// It is idempotent: deleting an already deleted character has no effect.
+func (doc *Document) RemoteDelete(char Character) error {
+	if !doc.Contains(char.ID) {
+		return ErrNotReady
+	}
+
+	doc.IntegrateDelete(char)
+	return nil
+}
+
+// VisiblePosition returns the 1-based visible position of the character with
+// the given ID, or -1 if it is not present or not visible.
+func (doc *Document) VisiblePosition(charID string) int {
+	count := 0
+	for _, char := range doc.Characters {
+		if char.Visible {
+			count++
+		}
+		if char.ID == charID {
+			if !char.Visible {
+				return -1
+			}
+			return count
+		}
+	}
+	return -1
 }
 
 // Implement the CRDT interface

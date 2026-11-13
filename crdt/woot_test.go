@@ -74,12 +74,12 @@ func TestIntegrateInsert_SamePosition(t *testing.T) {
 		t.Errorf("error: %v\n", err)
 	}
 
-	// The final document should be:
+	// The final document should be (neighbours keep their original links, as WOOT requires):
 	wantDoc := &Document{
 		Characters: []Character{
-			{ID: "start", Visible: false, Value: "", IDPrevious: "", IDNext: "3"},
+			{ID: "start", Visible: false, Value: "", IDPrevious: "", IDNext: "1"},
 			{ID: "3", Visible: false, Value: "b", IDPrevious: "start", IDNext: "1"},
-			{ID: "1", Visible: false, Value: "e", IDPrevious: "3", IDNext: "2"},
+			{ID: "1", Visible: false, Value: "e", IDPrevious: "start", IDNext: "2"},
 			{ID: "2", Visible: false, Value: "n", IDPrevious: "1", IDNext: "end"},
 			{ID: "end", Visible: false, Value: "", IDPrevious: "2", IDNext: ""},
 		},
@@ -118,13 +118,13 @@ func TestIntegrateInsert_BetweenTwoPositions(t *testing.T) {
 		t.Errorf("error: %v\n", err)
 	}
 
-	// The final document should be:
+	// The final document should be (neighbours keep their original links, as WOOT requires):
 	wantDoc := &Document{
 		Characters: []Character{
 			{ID: "start", Visible: false, Value: "", IDPrevious: "", IDNext: "1"},
-			{ID: "1", Visible: false, Value: "c", IDPrevious: "start", IDNext: "3"},
+			{ID: "1", Visible: false, Value: "c", IDPrevious: "start", IDNext: "2"},
 			{ID: "3", Visible: false, Value: "a", IDPrevious: "1", IDNext: "2"},
-			{ID: "2", Visible: false, Value: "t", IDPrevious: "3", IDNext: "end"},
+			{ID: "2", Visible: false, Value: "t", IDPrevious: "1", IDNext: "end"},
 			{ID: "end", Visible: false, Value: "", IDPrevious: "2", IDNext: ""},
 		},
 	}
